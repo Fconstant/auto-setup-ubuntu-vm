@@ -38,7 +38,7 @@ Script para automatizar a configuração de um servidor ARM com Docker, proxy re
 
 1. **Executar o Script** (substitua USER/REPO):  
 ```bash
-curl -sSL https://raw.githubusercontent.com/SEU_USUARIO_GITHUB/SEU_REPO/main/setup-server.sh | bash
+curl -sSL https://raw.githubusercontent.com/Fconstant/ubuntu-arm-config/main/setup-server.sh | bash
 ```
 
 2. **Configurar Variáveis**:  
