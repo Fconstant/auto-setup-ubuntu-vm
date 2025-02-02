@@ -1,214 +1,227 @@
 #!/bin/bash
 set -e
 
-# --- Configuração Automática do GitHub ---
-# Se executado via CURL, extrai USER/REPO da URL
-if [[ "$@" == *"curl"* ]]; then
-    SCRIPT_URL=$(ps -o args= | grep -m1 "curl" | grep -o "https://raw.githubusercontent.com/[^ ]*")
-    IFS='/' read -ra ADDR <<< "$SCRIPT_URL"
-    GITHUB_USER="${ADDR[4]}"
-    GITHUB_REPO="${ADDR[5]}"
-    GITHUB_BRANCH="${ADDR[6]}"
-fi
-
-# --- Download do .env.example ---
-ENV_EXAMPLE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/.env.example"
-if [ ! -f "$HOME/.env" ] && [ ! -f "$HOME/.env.example" ]; then
-    echo "Baixando .env.example do repositório..."
-    curl -sSL "$ENV_EXAMPLE_URL" -o "$HOME/.env.example" || {
-        echo "Erro ao baixar .env.example!"
-        exit 1
-    }
-    echo "Arquivo .env.example baixado. Preencha e renomeie:"
-    echo "mv ~/.env.example ~/.env && nano ~/.env"
-    exit 0
-fi
-
-# Configuração inicial de diretórios
+# --- Constantes ---
 APPS_DIR="$HOME/apps"
-mkdir -p "$APPS_DIR"
+CADDY_BASE_DIR="$APPS_DIR/base"
 
-# Função para validar entrada de e-mail
+# --- Configuração do GitHub ---
+get_github_details() {
+    if [[ "$*" == *"curl"* ]]; then
+        SCRIPT_URL=$(ps -o args= | grep -m1 "curl" | grep -o "https://raw.githubusercontent.com/[^ ]*")
+        IFS='/' read -ra ADDR <<< "$SCRIPT_URL"
+        GITHUB_USER="${ADDR[4]}"
+        GITHUB_REPO="${ADDR[5]}"
+        GITHUB_BRANCH="${ADDR[6]}"
+    fi
+}
+
+# --- Validações ---
 validate_email() {
-    local email=$1
-    if [[ ! "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+    [[ "$1" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || {
         echo "Erro: E-mail inválido!"
         exit 1
-    fi
+    }
+}
+validate_swarm_mode() {
+    [[ "$1" =~ ^(manager|worker|standalone)$ ]] || {
+        echo "Erro: Modo Swarm inválido! Valores aceitos: manager/worker/standalone"
+        exit 1
+    }
+}
+validate_ip() {
+    [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+        echo "Erro: IP inválido!"
+        exit 1
+    }
 }
 
-# Carregar variáveis de ambiente ou solicitar input
-if [ -f "$HOME/.env" ]; then
+# --- Configuração do Ambiente ---
+setup_environment() {
+    # Criar .env se não existir
+    if [ ! -f "$HOME/.env" ]; then
+        read -p "Domínio DuckDNS (ex: fconstant): " DUCKDNS_SUBDOMAIN
+        read -p "Token DuckDNS: " DUCKDNS_TOKEN
+        read -p "E-mail para HTTPS: " EMAIL
+        read -p "Modo de operação (manager/worker/standalone): " SWARM_MODE
+
+        validate_email "$EMAIL"
+        validate_swarm_mode "$SWARM_MODE"
+
+        cat > "$HOME/.env" <<EOF
+DOMAIN=${DUCKDNS_SUBDOMAIN}.duckdns.org
+EMAIL=$EMAIL
+DUCKDNS_TOKEN=$DUCKDNS_TOKEN
+SWARM_MODE=$SWARM_MODE
+EOF
+    fi
+
     source "$HOME/.env"
-else
-    read -p "Digite seu domínio DuckDNS (ex: fconstant): " DUCKDNS_SUBDOMAIN
-    read -p "Digite o token DuckDNS: " DUCKDNS_TOKEN
-    read -p "Digite seu e-mail para certificados HTTPS: " EMAIL
-    validate_email "$EMAIL"
+    validate_swarm_mode "$SWARM_MODE"
+}
+
+# --- Configuração do Sistema ---
+configure_swap() {
+    local total_disk=$(df --output=size -BG / | tail -1 | tr -d 'G')
+    local swap_size=$((total_disk * 20 / 100))
+    swap_size=$((swap_size > 2048 ? 2048 : swap_size))
+
+    echo "🔧 Configurando swap de ${swap_size}MB..."
+    sudo fallocate -l ${swap_size}M /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+}
+
+setup_firewall() {
+    echo "🔥 Configurando Firewall..."
+    sudo apt-get install -y ufw
+    sudo ufw allow ssh comment 'SSH access'
+    sudo ufw allow http comment 'HTTP traffic'
+    sudo ufw allow https comment 'HTTPS traffic'
     
-    echo "DOMAIN=${DUCKDNS_SUBDOMAIN}.duckdns.org" > "$HOME/.env"
-    echo "EMAIL=$EMAIL" >> "$HOME/.env"
-    echo "DUCKDNS_TOKEN=$DUCKDNS_TOKEN" >> "$HOME/.env"
-fi
-
-# Carregar variáveis
-source "$HOME/.env"
-
-# Etapa 1: Configurar Swap
-TOTAL_DISK=$(df --output=size -BG / | tail -1 | tr -d 'G')
-SWAP_SIZE=$((TOTAL_DISK * 20 / 100))
-SWAP_SIZE=$((SWAP_SIZE > 2048 ? 2048 : SWAP_SIZE)) # Máximo de 2GB
-
-echo "Configurando Swap de ${SWAP_SIZE}MB..."
-sudo fallocate -l ${SWAP_SIZE}M /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-
-# Etapa 2: Instalar Docker e Docker Compose
-echo "Instalando Docker..."
-sudo apt-get update
-sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-sudo usermod -aG docker $USER
-
-echo "Instalando Docker Compose..."
-sudo curl -L "https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
-
-# Etapa 3: Configurar Caddy Reverse Proxy
-mkdir -p "$APPS_DIR/caddy/config"
-mkdir -p "$APPS_DIR/caddy/data"
-
-cat > "$APPS_DIR/caddy/Caddyfile" <<EOF
-{
-    email $EMAIL
-    acme_ca https://acme-v02.api.letsencrypt.org/directory
-}
-
-# Configuração base para todos os subdomínios
-*.${DOMAIN} {
-    tls {
-        dns duckdns {env.DUCKDNS_TOKEN}
-    }
-
-    reverse_proxy {{upstream}} {
-        header_up Host {host}
-    }
-}
-
-# Exemplo para NocoDB
-noco.${DOMAIN} {
-    reverse_proxy nocodb:8080
-}
-EOF
-
-cat > "$APPS_DIR/caddy/docker-compose.yml" <<EOF
-services:
-  caddy:
-    image: caddy:latest
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./config:/config
-      - ./data:/data
-    environment:
-      - DUCKDNS_TOKEN=${DUCKDNS_TOKEN}
-    networks:
-      - caddy-net
-
-networks:
-  caddy-net:
-    driver: bridge
-EOF
-
-# Etapa 4: Configurar Firewall
-echo "Configurando UFW..."
-sudo apt-get install -y ufw
-sudo ufw allow ssh
-sudo ufw allow http
-sudo ufw allow https
-sudo ufw --force enable
-
-# Etapa 5: Exemplo de Aplicação (NocoDB)
-mkdir -p "$APPS_DIR/nocodb"
-
-cat > "$APPS_DIR/nocodb/docker-compose.yml" <<EOF
-services:
-  nocodb:
-    image: nocodb/nocodb:latest
-    restart: unless-stopped
-    environment:
-      - NC_DB=sqlite:///mnt/data/noco.db
-    volumes:
-      - ./data:/mnt/data
-    networks:
-      - caddy-net
-
-networks:
-  caddy-net:
-    external: true
-EOF
-
-# Etapa 6: Script DuckDNS com agendamento controlado
-cat > "$APPS_DIR/duckdns-updater.sh" <<EOF
-#!/bin/bash
-while true; do
-    current_hour=\$(date +%H)
-    if [ \$current_hour -ge 6 ] && [ \$current_hour -lt 23 ]; then
-        curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_SUBDOMAIN}&token=${DUCKDNS_TOKEN}&ip="
+    # Regras para Swarm (manager e worker)
+    if [[ "$SWARM_MODE" == "manager" || "$SWARM_MODE" == "worker" ]]; then
+        sudo ufw allow 2377/tcp  # Porta do Docker Swarm
+        sudo ufw allow 7946/tcp  # Comunicação entre nodes
+        sudo ufw allow 7946/udp
+        sudo ufw allow 4789/udp  # Overlay network
     fi
-    sleep 900 # 15 minutos
-done
-EOF
 
-chmod +x "$APPS_DIR/duckdns-updater.sh"
+    sudo ufw --force enable
+}
 
-# Configurar serviço para DuckDNS Updater
-cat | sudo tee /etc/systemd/system/duckdns.service <<EOF
-[Unit]
-Description=DuckDNS Updater
+# --- Instalação do Docker ---
+install_docker_stack() {
+    echo "🐳 Instalando Docker..."
+    sudo apt-get update
+    sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+    
+    # Adicionar repositório oficial
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+    
+    # Instalar componentes
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+    
+    # Configurar usuário
+    sudo usermod -aG docker "$USER"
+}
 
-[Service]
-User=$USER
-ExecStart=$APPS_DIR/duckdns-updater.sh
-Restart=always
+# --- Configuração de Serviços ---
+setup_caddy() {
+    echo "🚀 Configurando Caddy..."
+    mkdir -p "$CADDY_BASE_DIR"/{config,data}
 
-[Install]
-WantedBy=multi-user.target
-EOF
+    # Baixar configurações do GitHub
+    curl -sSL "https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/Caddyfile" \
+        -o "$CADDY_BASE_DIR/Caddyfile"
+    
+    # Processar template
+    sed -i "s/\${DOMAIN}/$DOMAIN/g" "$CADDY_BASE_DIR/Caddyfile"
+    sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/Caddyfile"
+}
 
-sudo systemctl daemon-reload
-sudo systemctl enable duckdns.service
-sudo systemctl start duckdns.service
+deploy_services() {
+    echo "🎯 Implantando serviços..."
+    local compose_url="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/docker-compose.yml"
+    
+    # Baixar compose file
+    curl -sSL "$compose_url" -o "$CADDY_BASE_DIR/docker-compose.yml"
+    
+    # Processar variáveis
+    sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/docker-compose.yml"
 
-# Etapa 7: Failsafe para SSH
-cat | sudo tee /etc/systemd/system/ssh-heartbeat.service <<EOF
-[Unit]
-Description=SSH Heartbeat Monitor
+    if [[ "$SWARM_MODE" == "manager" ]]; then
+        docker network inspect caddy-net &>/dev/null || docker network create -d overlay --attachable caddy-net
+        docker stack deploy -c "$CADDY_BASE_DIR/docker-compose.yml" caddy_stack
+    else
+        docker network inspect caddy-net &>/dev/null || docker network create -d bridge --attachable caddy-net
+        docker compose -f "$CADDY_BASE_DIR/docker-compose.yml" up -d
+    fi
+}
 
-[Service]
-ExecStart=/bin/bash -c 'while true; do if ! nc -z localhost 22; then systemctl restart ssh; fi; sleep 300; done'
-Restart=always
+# --- Configuração do Swarm ---
+init_swarm() {
+    echo "🐝 Inicializando Docker Swarm..."
+    local advertise_addr=$(hostname -I | awk '{print $1}')
+    
+    if ! docker swarm init --advertise-addr "$advertise_addr"; then
+        echo "❌ Falha ao inicializar o Swarm!"
+        exit 1
+    fi
 
-[Install]
-WantedBy=multi-user.target
-EOF
+    # Gerar tokens
+    echo "SWARM_TOKEN_MANAGER=$(docker swarm join-token -q manager)" >> "$HOME/.env"
+    echo "SWARM_TOKEN_WORKER=$(docker swarm join-token -q worker)" >> "$HOME/.env"
+}
 
-sudo systemctl daemon-reload
-sudo systemctl enable ssh-heartbeat.service
-sudo systemctl start ssh-heartbeat.service
+join_swarm() {
+    read -p "IP do Manager: " MANAGER_IP
+    read -p "Token de Join: " SWARM_TOKEN
+    
+    validate_ip "$MANAGER_IP"
+    validate_swarm_token "$SWARM_TOKEN"
 
-# Finalização
-echo "Configuração concluída!"
-echo "Para iniciar os serviços:"
-echo "1. Caddy: cd $APPS_DIR/caddy && docker compose up -d"
-echo "2. NocoDB: cd $APPS_DIR/nocodb && docker compose up -d"
-echo "Reinicie a sessão SSH para aplicar as permissões do Docker"
+    if ! docker swarm join --token "$SWARM_TOKEN" "$MANAGER_IP":2377; then
+        echo "❌ Falha ao entrar no Swarm!"
+        exit 1
+    fi
+}
+
+# --- Agendamento de Tarefas ---
+setup_cronjobs() {
+    echo "⏰ Configurando tarefas agendadas..."
+    
+    # DuckDNS (6h-23h, a cada 15m)
+    if [[ "$SWARM_MODE" != "worker" ]]; then
+        (crontab -l 2>/dev/null; echo "*/15 6-23 * * * curl -s 'https://www.duckdns.org/update?domains=${DUCKDNS_SUBDOMAIN}&token=${DUCKDNS_TOKEN}&ip='") | crontab -
+    fi
+    # SSH Failsafe (a cada 10m)
+    (crontab -l 2>/dev/null; echo "*/10 * * * * if ! nc -z localhost 22; then sudo systemctl restart ssh; fi") | crontab -
+}
+
+# --- Fluxo Principal ---
+main() {
+    # Executar configurações iniciais
+    get_github_details "$@"
+    setup_environment
+    configure_swap
+    setup_firewall
+    install_docker_stack
+    setup_cronjobs
+
+    if [[ "$SWARM_MODE" == "worker" ]]; then
+        join_swarm
+    else
+        setup_caddy
+        # Configurar Swarm se necessário
+        if [[ "$SWARM_MODE" == "manager" ]]; then
+            init_swarm
+        fi
+        deploy_services
+    fi
+
+    echo -e "\n✅ Configuração concluída ($SWARM_MODE)"
+
+    [[ "$SWARM_MODE" == "manager" ]] &&
+        echo "🔍 Verifique os serviços com: docker service ls" ||
+        echo "🔍 Verifique os containers com: docker ps"
+
+    [[ "$SWARM_MODE" == "worker" ]] &&
+        echo "🔍 Worker apontando pro Manager $MANAGER_IP"
+
+    [[ "$SWARM_MODE" == "standalone" ]] && {
+        echo "🔍 Verifique o docker-compose em: ~/apps/base"
+        echo "📦 Para adicionar novos serviços:"
+        echo "  1. mkdir ~/apps/meu-app && cd ~/apps/meu-app"
+        echo "  2. Crie um docker-compose.yml usando a rede 'caddy-net'"
+        echo "  3. docker compose up -d"
+    }
+    
+    echo "🔁 Reinicie sua sessão SSH para aplicar as permissões"
+}
+
+main "$@"

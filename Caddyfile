@@ -1,0 +1,20 @@
+{
+    email ${EMAIL}
+    acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+*.${DOMAIN} {
+    tls {
+        dns duckdns {env.DUCKDNS_TOKEN}
+    }
+    reverse_proxy {{upstream}} {
+        header_up Host {host}
+    }
+}
+
+# # Exemplo para serviços adicionais, descomente abaixo para usar
+# # Pode ser feito dessa maneira ou diretamente pelo docker-compose usando labels.
+#
+# app.${DOMAIN} {
+#     reverse_proxy app_container:8080
+# }
