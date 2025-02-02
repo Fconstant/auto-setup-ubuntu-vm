@@ -43,7 +43,7 @@ Assim como configuração em Docker Swarm se necessário.</p>
 1. **Executar o Script**:  
 ```bash
 # Modo Standalone (default)
-curl -sSL https://raw.githubusercontent.com/seu-user/seu-repo/main/setup-server.sh | bash
+curl -sSL https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main/setup-server.sh | bash
 
 # Modo Manager (Docker Swarm)
 curl -sSL ... | SWARM_MODE=manager bash
