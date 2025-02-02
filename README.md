@@ -55,6 +55,14 @@ curl -sSL [URL] | SWARM_MODE=manager bash
 curl -sSL [URL] | SWARM_MODE=worker bash
 ```
 
+### Em outro dir
+Por padrão será instalado no diretório `~/apps`
+Porém você pode mudar isso com a variável de ambiente: `APPS_BASE_DIR`:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main/setup-server.sh | APPS_BASE_DIR="$HOME/custom-dir" bash
+```
+
 ### Pós-Instalação:
 1. Configure as variáveis:  
 ```bash

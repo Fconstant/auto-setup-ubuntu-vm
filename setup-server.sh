@@ -1,9 +1,12 @@
 #!/bin/bash
 set -e
 
-# --- Constantes ---
-APPS_DIR="$HOME/apps"
-CADDY_BASE_DIR="$APPS_DIR/base"
+APPS_BASE_DIR="${APPS_BASE_DIR:-}"
+if [ -z "$APPS_BASE_DIR" ]; then
+  read -p "Informe o diretório base das aplicações (padrão: $HOME/apps): " input
+  `APPS_BASE_DIR`="${input:-$HOME/apps}"
+fi
+CADDY_BASE_DIR="$APPS_BASE_DIR/base"
 
 # --- Configuração do GitHub ---
 get_github_details() {
