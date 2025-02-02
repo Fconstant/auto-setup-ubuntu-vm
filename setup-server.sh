@@ -113,7 +113,6 @@ install_docker_stack() {
 # --- Configuração de Serviços ---
 setup_caddy() {
     echo "🚀 Configurando Caddy..."
-    mkdir -p "$CADDY_BASE_DIR"/{config,data}
 
     # Baixar configurações do GitHub
     curl -sSL "https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/Caddyfile" \
