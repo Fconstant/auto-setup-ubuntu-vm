@@ -1,7 +1,8 @@
-# Auto-Server Setup for x86/ARM Ubuntu 22/24
-
-Script para automatizar a configuração de um servidor x86/ARM com Docker, proxy reverso (Caddy) e atualização dinâmica de DNS.
-Assim como configuração em Docker Swarm se necessário.
+<center>
+<img src="./logo.png" width="400px"/>
+<p style="font-weight: bold; max-width: 75%; font-size: 16px; text-align: center;">Script para automatizar a configuração de um servidor x86/ARM com Docker, proxy reverso (Caddy) + atualização dinâmica de DNS free (DuckDNS).
+Assim como configuração em Docker Swarm se necessário.</p>
+</center>
 
 ## Funcionalidades Principais
 
