@@ -4,7 +4,7 @@ set -e
 APPS_BASE_DIR="${APPS_BASE_DIR:-}"
 if [ -z "$APPS_BASE_DIR" ]; then
   read -p "Informe o diretório base das aplicações (padrão: $HOME/apps): " input
-  `APPS_BASE_DIR`="${input:-$HOME/apps}"
+  APPS_BASE_DIR="${input:-$HOME/apps}"
 fi
 CADDY_BASE_DIR="$APPS_BASE_DIR/base"
 
@@ -165,7 +165,6 @@ join_swarm() {
     read -p "Token de Join: " SWARM_TOKEN
     
     validate_ip "$MANAGER_IP"
-    validate_swarm_token "$SWARM_TOKEN"
 
     if ! docker swarm join --token "$SWARM_TOKEN" "$MANAGER_IP":2377; then
         echo "❌ Falha ao entrar no Swarm!"
