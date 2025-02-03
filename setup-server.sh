@@ -33,7 +33,7 @@ validate_ip() {
 setup_environment() {
     # Criar .env se não existir
     if [ ! -f "$HOME/.env" ]; then
-        read -p "Domínio DuckDNS (ex: fconstant): " DUCKDNS_SUBDOMAIN
+        read -p "Domínio DuckDNS (Sem .duckdns.org): " DUCKDNS_SUBDOMAIN
         read -p "Token DuckDNS: " DUCKDNS_TOKEN
         read -p "E-mail para HTTPS: " EMAIL
         read -p "Modo de operação (manager/worker/standalone): " SWARM_MODE
@@ -62,8 +62,8 @@ configure_swap() {
 
     # Exemplo usando df em megabytes
     local total_disk=$(df --output=size -m / | tail -1 | tr -d ' ')
-    local swap_size=$(( total_disk * 20 / 100 ))
-    swap_size=$(( swap_size > 2048 ? 2048 : swap_size ))
+    local swap_size=$((total_disk * 20 / 100))
+    swap_size=$((swap_size > 2048 ? 2048 : swap_size))
 
     echo "🔧 Configurando swap de ${swap_size}MB..."
 
@@ -123,8 +123,9 @@ install_docker_stack() {
     sudo apt-get update
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io
 
-    # Configurar usuário
+    # Configurar usuário no grupo docker (permissões)
     sudo usermod -aG docker "$USER"
+    newgrp docker
 }
 
 # --- Configuração de Serviços ---
@@ -144,6 +145,7 @@ deploy_services() {
     echo "🎯 Implantando serviços..."
     local compose_url="$REPO_URL/docker-compose.yml"
 
+    # Verificar se o arquivo docker-compose.yml já existe
     if [ -f "$CADDY_BASE_DIR/docker-compose.yml" ]; then
         echo "Arquivo docker-compose.yml já existe. Pulando download."
     else
@@ -151,26 +153,45 @@ deploy_services() {
         sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/docker-compose.yml"
     fi
 
+    # Verificar e criar a rede caddy-net dependendo do modo Swarm
+    create_network() {
+        local network_type=$1
+        if docker network inspect caddy-net &>/dev/null; then
+            existing_network_type=$(docker network inspect caddy-net -f '{{.Driver}}')
+            if [[ "$existing_network_type" != "$network_type" ]]; then
+                echo "Rede caddy-net com tipo incorreto ($existing_network_type). Removendo e recriando..."
+                docker network rm caddy-net
+                docker network create -d "$network_type" --attachable caddy-net
+            else
+                echo "Rede caddy-net já existe e está configurada corretamente."
+            fi
+        else
+            echo "Criando rede caddy-net..."
+            docker network create -d "$network_type" --attachable caddy-net
+        fi
+    }
+
+    # Se for modo manager, usar rede overlay; caso contrário, bridge
     if [[ "$SWARM_MODE" == "manager" ]]; then
+        create_network "overlay"
         if docker stack ls | grep -q caddy_stack; then
             echo "Stack caddy_stack já implantada. Pulando implantação."
         else
-            docker network inspect caddy-net &>/dev/null || docker network create -d overlay --attachable caddy-net
             docker stack deploy -c "$CADDY_BASE_DIR/docker-compose.yml" caddy_stack
         fi
     else
-        docker network inspect caddy-net &>/dev/null || docker network create -d bridge --attachable caddy-net
+        create_network "bridge"
         docker compose -f "$CADDY_BASE_DIR/docker-compose.yml" up -d
     fi
 }
 
 # --- Configuração do Swarm ---
 init_swarm() {
-    if docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -q "active"; then
+    if docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -qx "active"; then
         echo "🐝 Swarm já está ativo. Pulando inicialização."
         return
     fi
-    
+
     echo "🐝 Inicializando cluster Docker Swarm (MANAGER)..."
     local advertise_addr=$(hostname -I | awk '{print $1}')
 
@@ -204,6 +225,7 @@ join_swarm() {
 
 setup_cronjobs() {
     echo "⏰ Configurando tarefas agendadas..."
+    dpkg -l | grep -q cron || sudo apt-get install -y cron
 
     if [[ "$SWARM_MODE" != "worker" ]]; then
         local duck_dns_url="https://www.duckdns.org/update?domains=${DUCKDNS_SUBDOMAIN}&token=${DUCKDNS_TOKEN}&ip="
