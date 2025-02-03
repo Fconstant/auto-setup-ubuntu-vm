@@ -1,0 +1,364 @@
+---
+- name: Configurar servidor Ubuntu para Docker, Caddy, Swarm e demais serviços
+  hosts: all
+  become: yes
+  collections:
+  - community.general
+  vars:
+    # URL base do repositório remoto onde estão os arquivos Caddyfile e docker-compose*
+    repo_url: "https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main"
+  vars_prompt:
+  - name: "apps_base_dir"
+    prompt: "Informe o diretório base das aplicações (Padrão: ~/apps)"
+    private: no
+    default: "{{ lookup('env','HOME') + '/apps' }}"
+  - name: "duckdns_subdomain"
+    prompt: "Domínio DuckDNS (Sem .duckdns.org):"
+    private: no
+  - name: "duckdns_token"
+    prompt: "Token DuckDNS:"
+    private: no
+  - name: "email"
+    prompt: "E-mail para HTTPS:"
+    private: no
+  - name: "swarm_mode"
+    prompt: "Modo de operação (manager/worker/standalone):"
+    private: no
+  - name: "manager_address"
+    prompt: "Address/IP do Manager (somente se swarm_mode=worker, deixe em branco caso não se aplique):"
+    private: no
+    default: ""
+  - name: "swarm_join_token"
+    prompt: "Token de Join (somente se swarm_mode=worker, deixe em branco caso não se aplique):"
+    private: no
+    default: ""
+  pre_tasks:
+  - name: Validar formato do e-mail
+    assert:
+      that:
+      - email is match("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+      fail_msg: "E-mail inválido!"
+
+  - name: Validar valor de swarm_mode
+    assert:
+      that:
+      - swarm_mode in ['manager', 'worker', 'standalone']
+      fail_msg: "Modo de operação inválido! Use: manager, worker ou standalone."
+
+  - name: Se modo worker, garantir que os dados de join foram informados
+    assert:
+      that:
+      - (swarm_mode != 'worker') or (manager_address | length > 0 and swarm_join_token | length > 0)
+      fail_msg: "Para o modo worker, informe manager_address e swarm_join_token."
+
+  - name: Definir variável domain
+    set_fact:
+      domain: "{{ duckdns_subdomain }}.duckdns.org"
+      caddy_base_dir: "{{ apps_base_dir }}/base"
+
+  tasks:
+  - name: Atualizar cache do APT
+    apt:
+      update_cache: yes
+      cache_valid_time: 3600
+
+  - name: Configurar swap se não estiver ativo
+    block:
+    - name: Verificar se /swapfile está ativo
+      command: grep -q '^/swapfile' /proc/swaps
+      register: swap_active
+      ignore_errors: yes
+
+    - name: Obter tamanho total do disco (em MB)
+      command: "df --output=size -m / | tail -1"
+      register: disk_size_raw
+      changed_when: false
+
+    - name: Calcular tamanho do swap (20% do disco, máximo 2048MB)
+      set_fact:
+        total_disk_mb: "{{ disk_size_raw.stdout | trim | int }}"
+        swap_size_mb: >-
+          {{
+            [ (total_disk_mb * 20 // 100) , 2048 ] | sort | first
+          }}
+    - name: Remover /swapfile se existir mas não estiver ativo
+      file:
+        path: /swapfile
+        state: absent
+      when: swap_active.rc != 0 and (ansible_facts['devices'] is defined and '/swapfile' in ansible_facts['devices']) | default(false)
+
+    - name: Criar swapfile de {{ swap_size_mb }}MB
+      command: "fallocate -l {{ swap_size_mb }}M /swapfile"
+      args:
+        creates: /swapfile
+
+    - name: Ajustar permissões do swapfile
+      file:
+        path: /swapfile
+        mode: "0600"
+
+    - name: Configurar swapfile
+      command: "mkswap /swapfile"
+      args:
+        creates: "/swapfile"
+
+    - name: Ativar swapfile
+      command: "swapon /swapfile"
+      when: swap_active.rc != 0
+
+    - name: Garantir entrada no /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        line: "/swapfile none swap sw 0 0"
+        state: present
+    when: swap_active.rc != 0
+
+  - name: Configurar firewall (ufw) se ainda não configurado
+    block:
+    - name: Instalar ufw
+      apt:
+        name: ufw
+        state: present
+
+    - name: Permitir acesso SSH
+      community.general.ufw:
+        rule: allow
+        name: "ssh"
+        comment: "SSH access"
+
+    - name: Permitir tráfego HTTP
+      ufw:
+        rule: allow
+        port: "80"
+        proto: tcp
+        comment: "HTTP traffic"
+
+    - name: Permitir tráfego HTTPS
+      ufw:
+        rule: allow
+        port: "443"
+        proto: tcp
+        comment: "HTTPS traffic"
+
+    - name: Permitir portas do Docker Swarm (manager e worker)
+      ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+        comment: "{{ item.comment }}"
+      loop:
+      - { port: "2377", proto: "tcp", comment: "Docker Swarm manager" }
+      - { port: "7946", proto: "tcp", comment: "Swarm communication (TCP)" }
+      - { port: "7946", proto: "udp", comment: "Swarm communication (UDP)" }
+      - { port: "4789", proto: "udp", comment: "Overlay network" }
+      when: swarm_mode in ['manager', 'worker']
+
+    - name: Habilitar ufw
+      ufw:
+        state: enabled
+        policy: deny
+
+    - name: Criar marcador de firewall configurado
+      file:
+        path: /tmp/ufw_configured
+        state: touch
+    when: not (ansible_facts['filesystem'] is defined and (lookup('file', '/tmp/ufw_configured', errors='ignore') is defined))
+
+  - name: Instalar Docker (se não estiver instalado)
+    block:
+    - name: Verificar se o Docker está instalado
+      command: which docker
+      register: docker_check
+      ignore_errors: yes
+
+    - name: Instalar dependências para Docker
+      apt:
+        name:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - software-properties-common
+        state: present
+      when: docker_check.rc != 0
+
+    - name: Adicionar chave GPG do Docker
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: docker_check.rc != 0
+
+    - name: Adicionar repositório do Docker
+      apt_repository:
+        repo: "deb [arch={{ ansible_architecture }} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        filename: docker
+      when: docker_check.rc != 0
+
+    - name: Atualizar cache após adicionar repositório
+      apt:
+        update_cache: yes
+      when: docker_check.rc != 0
+
+    - name: Instalar pacotes do Docker
+      apt:
+        name:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+        state: present
+      when: docker_check.rc != 0
+
+    - name: Adicionar usuário atual ao grupo docker
+      user:
+        name: "{{ ansible_user_id }}"
+        groups: docker
+        append: yes
+      when: docker_check.rc != 0
+
+    - name: "Aviso: Necessária nova conexão para que as alterações de grupo tenham efeito"
+      debug:
+        msg: >
+          "Docker foi instalado ou atualizado. Para aplicar as permissões do grupo docker, saia e entre novamente na sessão SSH se você notar problemas."
+    when: docker_check.rc != 0
+
+  - name: Criar diretório base do Caddy
+    file:
+      path: "{{ caddy_base_dir }}"
+      state: directory
+      mode: "0755"
+
+  - name: Configurar Caddyfile (apenas se não existir)
+    block:
+    - name: Baixar Caddyfile do repositório
+      get_url:
+        url: "{{ repo_url }}/Caddyfile"
+        dest: "{{ caddy_base_dir }}/Caddyfile"
+        mode: "0644"
+      # Só baixa se o arquivo não existir
+      force: no
+
+    - name: Substituir variável ${DOMAIN} no Caddyfile
+      replace:
+        path: "{{ caddy_base_dir }}/Caddyfile"
+        regexp: '\\$\\{DOMAIN\\}'
+        replace: "{{ domain }}"
+    - name: Substituir variável ${DUCKDNS_TOKEN} no Caddyfile
+      replace:
+        path: "{{ caddy_base_dir }}/Caddyfile"
+        regexp: '\\$\\{DUCKDNS_TOKEN\\}'
+        replace: "{{ duckdns_token }}"
+    - name: Substituir variável ${EMAIL} no Caddyfile
+      replace:
+        path: "{{ caddy_base_dir }}/Caddyfile"
+        regexp: '\\$\\{EMAIL\\}'
+        replace: "{{ email }}"
+    when: not lookup('file', "{{ caddy_base_dir }}/Caddyfile", errors='ignore')
+
+  - name: Determinar URL do docker-compose a ser usado
+    set_fact:
+      compose_url: >-
+        {% if swarm_mode == "manager" %}
+          {{ repo_url }}/docker-compose.manager.yml
+        {% else %}
+          {{ repo_url }}/docker-compose.yml
+        {% endif %}
+
+  - name: Baixar arquivo docker-compose.yml (se não existir)
+    get_url:
+      url: "{{ compose_url }}"
+      dest: "{{ caddy_base_dir }}/docker-compose.yml"
+      mode: "0644"
+      force: no
+
+  - name: Substituir variável ${DUCKDNS_TOKEN} no docker-compose.yml
+    replace:
+      path: "{{ caddy_base_dir }}/docker-compose.yml"
+      regexp: '\\$\\{DUCKDNS_TOKEN\\}'
+      replace: "{{ duckdns_token }}"
+
+  - name: Implantar serviços com Docker
+    block:
+    - name: Implantar serviços com docker stack (modo manager ou worker)
+      command: "docker stack deploy -c {{ caddy_base_dir }}/docker-compose.yml caddy_stack"
+      when: swarm_mode in ['manager', 'worker']
+    - name: Implantar serviços com docker compose (modo standalone)
+      command: "docker compose -f {{ caddy_base_dir }}/docker-compose.yml up -d"
+      when: swarm_mode == 'standalone'
+    ignore_errors: yes
+
+  - name: Inicializar Docker Swarm no modo manager se não estiver ativo
+    block:
+    - name: Verificar se Swarm já está ativo
+      command: docker info --format '{{"{{"}}.Swarm.LocalNodeState{{"}}"}}'
+      register: swarm_state
+      changed_when: false
+
+    - name: Inicializar Docker Swarm (manager)
+      command: "docker swarm init --advertise-addr {{ ansible_default_ipv4.address }}"
+      when: "'active' not in swarm_state.stdout"
+    when: swarm_mode == 'manager'
+
+  - name: Entrar em Docker Swarm no modo worker
+    block:
+    - name: Verificar se o node já faz parte de um Swarm
+      command: docker info --format '{{"{{"}}.Swarm.LocalNodeState{{"}}"}}'
+      register: swarm_state_worker
+      changed_when: false
+      failed_when: false
+
+    - name: Executar join do Swarm
+      command: "docker swarm join --token {{ swarm_join_token }} {{ manager_address }}:2377"
+      when: "'active' not in swarm_state_worker.stdout"
+    when: swarm_mode == 'worker'
+
+  - name: Garantir que o cron esteja instalado
+    apt:
+      name: cron
+      state: present
+
+  - name: Configurar failsafe SSH via cron
+    cron:
+      name: "SSH failsafe: Reinicia o SSH se a porta 22 não responder"
+      minute: "*/10"
+      job: "if ! nc -z localhost 22; then systemctl restart ssh; fi"
+      user: root
+
+  - name: Mensagens finais - Modo manager
+    debug:
+      msg: |
+        Configuração concluída (manager)!
+        Verifique os serviços com: docker service ls
+        Verifique os containers com: docker ps
+        Acesse o Portainer em: https://{{ domain }}
+        Se necessário, para conectar novos nodes, utilize o token gerado no Manager.
+    when: swarm_mode == "manager"
+
+  - name: Mensagens finais - Modo worker
+    debug:
+      msg: |
+        Worker configurado para conectar ao Manager {{ manager_address }}.
+        Verifique a comunicação nas portas 2377, 7946 e 4789.
+    when: swarm_mode == "worker"
+
+  - name: Mensagens finais - Modo standalone
+    debug:
+      msg: |
+        Configuração concluída (standalone)!
+        Verifique o docker-compose em: {{ caddy_base_dir }}
+        A atualização do DNS DuckDNS está configurada via cron.
+        Para novos serviços, use o Portainer em: https://{{ domain }} ou implante containers usando a rede 'caddy-net'.
+    when: swarm_mode == "standalone"
+
+  # (Opcional) Se desejar remover arquivos de instalação:
+  - name: Perguntar se deseja remover arquivos de instalação
+    pause:
+      prompt: "Deseja limpar os arquivos de instalação (.env, etc.)? (y/N)"
+    register: cleanup_choice
+
+  - name: Remover arquivos de instalação
+    file:
+      path: "{{ item }}"
+      state: absent
+    loop:
+    - "{{ playbook_dir }}/.env"
+    - "{{ playbook_dir }}/setup-manager.sh"
+    when: cleanup_choice.user_input | lower == 'y'
