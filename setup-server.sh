@@ -1,11 +1,7 @@
 #!/bin/bash
 set -e
 
-APPS_BASE_DIR="${APPS_BASE_DIR:-}"
-if [ -z "$APPS_BASE_DIR" ]; then
-    read -p "Informe o diretório base das aplicações (padrão: $HOME/apps): " input
-    APPS_BASE_DIR="${input:-$HOME/apps}"
-fi
+APPS_BASE_DIR="${APPS_BASE_DIR:-$HOME/apps}"
 CADDY_BASE_DIR="$APPS_BASE_DIR/base"
 REPO_URL="https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main"
 
@@ -31,17 +27,20 @@ validate_ip() {
 
 # --- Configuração do Ambiente ---
 setup_environment() {
+    local env_file = "$(pwd)/.env"
     # Criar .env se não existir
-    if [ ! -f "$HOME/.env" ]; then
+    if [ ! -f env_file ]; then
+        read -p "Informe o diretório base das aplicações (Padrão: $HOME/apps): " APPS_BASE_DIR
         read -p "Domínio DuckDNS (Sem .duckdns.org): " DUCKDNS_SUBDOMAIN
         read -p "Token DuckDNS: " DUCKDNS_TOKEN
         read -p "E-mail para HTTPS: " EMAIL
         read -p "Modo de operação (manager/worker/standalone): " SWARM_MODE
-
+        
         validate_email "$EMAIL"
         validate_swarm_mode "$SWARM_MODE"
 
-        cat >"$HOME/.env" <<EOF
+        cat >env_file <<EOF
+APPS_BASE_DIR=$APPS_BASE_DIR
 DOMAIN=${DUCKDNS_SUBDOMAIN}.duckdns.org
 EMAIL=$EMAIL
 DUCKDNS_TOKEN=$DUCKDNS_TOKEN
@@ -49,7 +48,8 @@ SWARM_MODE=$SWARM_MODE
 EOF
     fi
 
-    source "$HOME/.env"
+    source env_file
+    CADDY_BASE_DIR="$APPS_BASE_DIR/base"
     validate_swarm_mode "$SWARM_MODE"
 }
 
@@ -148,10 +148,9 @@ setup_caddy() {
 }
 
 deploy_services() {
-    echo -e "\n🎯 Implantando serviços..."
+    echo "🎯 Implantando serviços..."
     local compose_url="$REPO_URL/docker-compose.yml"
 
-    # Verificar se o arquivo docker-compose.yml já existe
     if [ -f "$CADDY_BASE_DIR/docker-compose.yml" ]; then
         echo "Arquivo docker-compose.yml já existe. Pulando download."
     else
@@ -159,34 +158,12 @@ deploy_services() {
         sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/docker-compose.yml"
     fi
 
-    # Verificar e criar a rede caddy-net dependendo do modo Swarm
-    create_network() {
-        local network_type=$1
-        if docker network inspect caddy-net &>/dev/null; then
-            existing_network_type=$(docker network inspect caddy-net -f '{{.Driver}}')
-            if [[ "$existing_network_type" != "$network_type" ]]; then
-                echo "Rede caddy-net com tipo incorreto ($existing_network_type). Removendo e recriando..."
-                docker network rm caddy-net
-                docker network create -d "$network_type" --attachable caddy-net
-            else
-                echo "Rede caddy-net já existe e está configurada corretamente."
-            fi
-        else
-            echo "Criando rede caddy-net..."
-            docker network create -d "$network_type" --attachable caddy-net
-        fi
-    }
-
-    # Se for modo manager, usar rede overlay; caso contrário, bridge
-    if [[ "$SWARM_MODE" == "manager" ]]; then
-        create_network "overlay"
-        if docker stack ls | grep -q caddy_stack; then
-            echo "Stack caddy_stack já implantada. Pulando implantação."
-        else
-            docker stack deploy -c "$CADDY_BASE_DIR/docker-compose.yml" caddy_stack
-        fi
+    # Verificar e criar rede se necessário
+    if [[ "$SWARM_MODE" == "manager" || "$SWARM_MODE" == "worker" ]]; then
+        docker network inspect caddy-net &>/dev/null || docker network create -d overlay --attachable caddy-net
+        docker stack deploy -c "$CADDY_BASE_DIR/docker-compose.yml" caddy_stack
     else
-        create_network "bridge"
+        docker network inspect caddy-net &>/dev/null || docker network create -d bridge --attachable caddy-net
         docker compose -f "$CADDY_BASE_DIR/docker-compose.yml" up -d
     fi
 }

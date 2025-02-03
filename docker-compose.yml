@@ -42,9 +42,8 @@ services:
 
 networks:
   caddy-net:
-    driver: overlay
+    external: true
     attachable: true
-    name: caddy-net
 
 volumes:
   caddy_data:
