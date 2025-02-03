@@ -56,7 +56,7 @@ EOF
 # --- Configuração do Sistema ---
 configure_swap() {
     if grep -q "^/swapfile" /proc/swaps; then
-        echo "🔧 Swap já configurado (/swapfile ativo). Pulando configuração de swap."
+        echo -e "\n🔧 Swap já configurado (/swapfile ativo). Pulando configuração de swap."
         return
     fi
 
@@ -65,7 +65,7 @@ configure_swap() {
     local swap_size=$((total_disk * 20 / 100))
     swap_size=$((swap_size > 2048 ? 2048 : swap_size))
 
-    echo "🔧 Configurando swap de ${swap_size}MB..."
+    echo -e "\n🔧 Configurando swap de ${swap_size}MB..."
 
     # Se /swapfile já existir (mas não estiver ativo), remova-o primeiro
     if [ -f /swapfile ]; then
@@ -83,11 +83,11 @@ configure_swap() {
 
 setup_firewall() {
     if [ -f /tmp/ufw_configured ]; then
-        echo "🔥 Firewall já configurado. Pulando configuração."
+        echo -e "\n🔥 Firewall já configurado. Pulando configuração."
         return
     fi
 
-    echo "🔥 Configurando Firewall..."
+    echo -e "\n🔥 Configurando Firewall..."
     sudo apt-get install -y ufw
     sudo ufw allow ssh comment 'SSH access'
     sudo ufw allow http comment 'HTTP traffic'
@@ -108,11 +108,11 @@ setup_firewall() {
 # --- Instalação do Docker ---
 install_docker_stack() {
     if command -v docker &>/dev/null; then
-        echo "🐳 Docker já instalado. Pulando instalação."
+        echo -e "\n🐳 Docker já instalado. Pulando instalação."
         return
     fi
 
-    echo "🐳 Instalando Docker..."
+    echo -e "\n🐳 Instalando Docker..."
     sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
 
     # Adicionar repositório oficial
@@ -125,16 +125,22 @@ install_docker_stack() {
 
     # Configurar usuário no grupo docker (permissões)
     sudo usermod -aG docker "$USER"
+
+    echo -e "\n🐳 Docker instalado com sucesso! Para aplicar as permissões, por favor, saia e entre novamente na sessão SSH."
+    echo "Depois é só executar o script "setup-server.sh" novamente."
+    echo -e "\n⚠️ Aguardando o usuário sair e entrar na sessão SSH para aplicar permissões do Docker."
+
     newgrp docker
+    exit 0 # Encerra o script temporariamente para o usuário aplicar as permissões do grupo
 }
 
 # --- Configuração de Serviços ---
 setup_caddy() {
     mkdir -p "$CADDY_BASE_DIR"
     if [ -f "$CADDY_BASE_DIR/Caddyfile" ]; then
-        echo "🚀 Caddyfile já existe. Pulando download."
+        echo -e "\n🚀 Caddyfile já existe. Pulando download."
     else
-        echo "🚀 Configurando Caddy..."
+        echo -e "\n🚀 Configurando Caddy..."
         curl -sSL "$REPO_URL/Caddyfile" -o "$CADDY_BASE_DIR/Caddyfile"
         sed -i "s/\${DOMAIN}/$DOMAIN/g" "$CADDY_BASE_DIR/Caddyfile"
         sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/Caddyfile"
@@ -142,7 +148,7 @@ setup_caddy() {
 }
 
 deploy_services() {
-    echo "🎯 Implantando serviços..."
+    echo -e "\n🎯 Implantando serviços..."
     local compose_url="$REPO_URL/docker-compose.yml"
 
     # Verificar se o arquivo docker-compose.yml já existe
@@ -188,11 +194,11 @@ deploy_services() {
 # --- Configuração do Swarm ---
 init_swarm() {
     if docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -qx "active"; then
-        echo "🐝 Swarm já está ativo. Pulando inicialização."
+        echo -e "\n🐝 Swarm já está ativo. Pulando inicialização."
         return
     fi
 
-    echo "🐝 Inicializando cluster Docker Swarm (MANAGER)..."
+    echo -e "\n🐝 Inicializando cluster Docker Swarm (MANAGER)..."
     local advertise_addr=$(hostname -I | awk '{print $1}')
 
     if ! docker swarm init --advertise-addr "$advertise_addr"; then
@@ -207,11 +213,11 @@ init_swarm() {
 
 join_swarm() {
     if docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -q "active"; then
-        echo "🐝 Este node já faz parte de um Swarm. Pulando join_swarm."
+        echo -e "\n🐝 Este node já faz parte de um Swarm. Pulando join_swarm."
         return
     fi
 
-    echo "🐝 Entrando em um cluster Docker Swarm (WORKER)..."
+    echo -e "\n🐝 Entrando em um cluster Docker Swarm (WORKER)..."
     read -p "IP do Manager: " MANAGER_IP
     read -p "Token de Join: " SWARM_TOKEN
 
@@ -224,7 +230,7 @@ join_swarm() {
 }
 
 setup_cronjobs() {
-    echo "⏰ Configurando tarefas agendadas..."
+    echo -e "\n⏰ Configurando tarefas agendadas..."
     dpkg -l | grep -q cron || sudo apt-get install -y cron
 
     if [[ "$SWARM_MODE" != "worker" ]]; then
@@ -254,9 +260,10 @@ main() {
     # Executar configurações iniciais
     setup_environment
     sudo apt-get update
+    install_docker_stack
+
     configure_swap
     setup_firewall
-    install_docker_stack
     setup_cronjobs
 
     if [[ "$SWARM_MODE" == "worker" ]]; then
@@ -287,7 +294,7 @@ main() {
         echo "  3. docker compose up -d"
     }
 
-    echo "🔁 Reinicie sua sessão SSH para aplicar as permissões"
+    echo -e "\n🔁 Reinicie sua sessão SSH para aplicar as permissões"
 }
 
 main "$@"

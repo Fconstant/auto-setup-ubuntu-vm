@@ -52,17 +52,6 @@ Isso vai gravar um arquivo `setup-server.sh` no seu diretório atual.
 bash ./setup_server.sh
 ```
 
-### Executar no modo Docker Swarm:
-1. **Manager Node**:  
-```bash
-SWARM_MODE=manager bash ./setup_server.sh
-```
-
-2. **Worker Nodes**:
-```bash
-SWARM_MODE=worker SWARM_TOKEN=<token_gerado_pelo_manager> MANAGER_IP=<address_do_manager> bash ./setup_server.sh
-```
-
 ### Configurar em outro dir
 Por padrão será instalado no diretório `~/apps`
 Porém você pode mudar isso com a variável de ambiente: `APPS_BASE_DIR`:
