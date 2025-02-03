@@ -18,28 +18,24 @@ validate_swarm_mode() {
         exit 1
     }
 }
-validate_ip() {
-    [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
-        echo "Erro: IP inválido!"
-        exit 1
-    }
-}
 
 # --- Configuração do Ambiente ---
 setup_environment() {
-    local env_file = "$(pwd)/.env"
+    local script_dir=$(dirname "$(realpath "$0")")
+    local env_file="$script_dir/.env"
+
     # Criar .env se não existir
-    if [ ! -f env_file ]; then
+    if [ ! -f "$env_file" ]; then
         read -p "Informe o diretório base das aplicações (Padrão: $HOME/apps): " APPS_BASE_DIR
         read -p "Domínio DuckDNS (Sem .duckdns.org): " DUCKDNS_SUBDOMAIN
         read -p "Token DuckDNS: " DUCKDNS_TOKEN
         read -p "E-mail para HTTPS: " EMAIL
         read -p "Modo de operação (manager/worker/standalone): " SWARM_MODE
-        
+
         validate_email "$EMAIL"
         validate_swarm_mode "$SWARM_MODE"
 
-        cat >env_file <<EOF
+        cat >$env_file <<EOF
 APPS_BASE_DIR=$APPS_BASE_DIR
 DOMAIN=${DUCKDNS_SUBDOMAIN}.duckdns.org
 EMAIL=$EMAIL
@@ -48,8 +44,10 @@ SWARM_MODE=$SWARM_MODE
 EOF
     fi
 
-    source env_file
+    source $env_file
     CADDY_BASE_DIR="$APPS_BASE_DIR/base"
+
+    echo -e "\n🗂️ Diretório de instalação será $APPS_BASE_DIR. Caddy stack/compose em $CADDY_BASE_DIR.\n"
     validate_swarm_mode "$SWARM_MODE"
 }
 
@@ -150,21 +148,23 @@ setup_caddy() {
 deploy_services() {
     echo "🎯 Implantando serviços..."
     local compose_url="$REPO_URL/docker-compose.yml"
+    if [[ "$SWARM_MODE" == "manager" ]]; then
+        compose_url="$REPO_URL/docker-compose.manager.yml"
+    fi
+    local target_compose="$CADDY_BASE_DIR/docker-compose.yml"
 
-    if [ -f "$CADDY_BASE_DIR/docker-compose.yml" ]; then
+
+    if [ -f "$target_compose" ]; then
         echo "Arquivo docker-compose.yml já existe. Pulando download."
     else
-        curl -sSL "$compose_url" -o "$CADDY_BASE_DIR/docker-compose.yml"
-        sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/docker-compose.yml"
+        curl -sSL "$compose_url" -o "$target_compose"
+        sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$target_compose"
     fi
 
-    # Verificar e criar rede se necessário
     if [[ "$SWARM_MODE" == "manager" || "$SWARM_MODE" == "worker" ]]; then
-        docker network inspect caddy-net &>/dev/null || docker network create -d overlay --attachable caddy-net
-        docker stack deploy -c "$CADDY_BASE_DIR/docker-compose.yml" caddy_stack
+        docker stack deploy -c "$target_compose" caddy_stack
     else
-        docker network inspect caddy-net &>/dev/null || docker network create -d bridge --attachable caddy-net
-        docker compose -f "$CADDY_BASE_DIR/docker-compose.yml" up -d
+        docker compose -f "$target_compose" up -d
     fi
 }
 
@@ -195,12 +195,10 @@ join_swarm() {
     fi
 
     echo -e "\n🐝 Entrando em um cluster Docker Swarm (WORKER)..."
-    read -p "IP do Manager: " MANAGER_IP
+    read -p "Address/IP do Manager: " MANAGER_ADDRESS
     read -p "Token de Join: " SWARM_TOKEN
 
-    validate_ip "$MANAGER_IP"
-
-    if ! docker swarm join --token "$SWARM_TOKEN" "$MANAGER_IP":2377; then
+    if ! docker swarm join --token "$SWARM_TOKEN" "$MANAGER_ADDRESS":2377; then
         echo "❌ Falha ao entrar no Swarm!"
         exit 1
     fi
@@ -256,22 +254,30 @@ main() {
 
     echo -e "\n✅ Configuração concluída ($SWARM_MODE)"
 
-    [[ "$SWARM_MODE" == "manager" ]] &&
-        echo "🔍 Verifique os serviços com: docker service ls" ||
+    [[ "$SWARM_MODE" == "manager" ]] && {
+        echo "🔍 Verifique os serviços com: docker service ls"
         echo "🔍 Verifique os containers com: docker ps"
+        echo "📦 Para novos serviços e status, use o Portainer em https://${DOMAIN}"
+        echo "🐋 Para conectar novos nodes no Swarm, use o Manager Token: $SWARM_TOKEN_MANAGER"
+        echo "🐋 Você vai precisar rodar esse mesmo script na máquina destino como SWARM_MODE=worker"
+    }
 
-    [[ "$SWARM_MODE" == "worker" ]] &&
-        echo "🔍 Worker apontando pro Manager $MANAGER_IP"
+    # Mensagens para quem está no modo Worker
+    [[ "$SWARM_MODE" == "worker" ]] && {
+        echo "🔍 Worker configurado para apontar para o Manager $MANAGER_IP"
+        echo "⚠️ Verifique a comunicação entre o Manager e o Worker nas portas 2377, 7946, e 4789."
+    }
 
+    # Mensagens para quem está no modo Standalone
     [[ "$SWARM_MODE" == "standalone" ]] && {
         echo "🔍 Verifique o docker-compose em: ~/apps/base"
-        echo "📦 Para adicionar novos serviços:"
+        echo "📅 A configuração de DNS DuckDNS está automática via Cron."
+        echo "📦 Para novos serviços e status, use o Portainer em https://${DOMAIN}"
+        echo "📦 Alternativamente você pode fazer manualmente (Não recomendado):"
         echo "  1. mkdir ~/apps/meu-app && cd ~/apps/meu-app"
         echo "  2. Crie um docker-compose.yml usando a rede 'caddy-net'"
         echo "  3. docker compose up -d"
     }
-
-    echo -e "\n🔁 Reinicie sua sessão SSH para aplicar as permissões"
 }
 
 main "$@"

@@ -17,20 +17,40 @@ services:
       DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
     networks:
       - caddy-net
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.role == manager
 
   portainer:
     image: portainer/portainer-ce:2.26.1-alpine
-    command: -H unix:///var/run/docker.sock --tlsskipverify
+    command: -H tcp://tasks.agent:9001 --tlsskipverify
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data
     networks:
       - caddy-net
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.platform.os == linux
+
+  portainer-agent:
+    image: portainer/agent:2.26.1-alpine
+    networks:
+      - caddy-net
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.platform.os == linux
 
 networks:
   caddy-net:
-    driver: bridge
+    driver: overlay
     attachable: true
     name: caddy-net
 
