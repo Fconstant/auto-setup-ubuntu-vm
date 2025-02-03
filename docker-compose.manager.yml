@@ -1,6 +1,7 @@
 services:
   caddy:
     image: caddy:2-alpine
+    container_name: caddy
     restart: unless-stopped
     ports:
       - target: 80
@@ -13,8 +14,6 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
       - caddy_config:/config
-    environment:
-      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
     networks:
       - caddy-net
     deploy:
@@ -25,6 +24,7 @@ services:
 
   portainer:
     image: portainer/portainer-ce:2.26.1-alpine
+    container_name: portainer
     command: -H tcp://tasks.agent:9001 --tlsskipverify
     restart: unless-stopped
     volumes:
@@ -40,6 +40,7 @@ services:
 
   portainer-agent:
     image: portainer/agent:2.26.1-alpine
+    container_name: portainer-agent
     networks:
       - caddy-net
     deploy:

@@ -5,7 +5,7 @@
 
 *.${DOMAIN} {
     tls {
-        dns duckdns {env.DUCKDNS_TOKEN}
+        dns duckdns ${DUCKDNS_TOKEN}
     }
     reverse_proxy {{upstream}} {
         header_up Host {host}

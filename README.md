@@ -5,36 +5,36 @@
 
 ## Funcionalidades Principais
 
-1. **Configuração Inteligente de Swap**  
+1. **Configuração Inteligente de Swap**
    - Cria partição swap de 20% do disco (máx 2GB) automaticamente
 
-2. **Docker Engine + Docker Compose**  
+2. **Docker Engine + Docker Compose**
    - Versões mais recentes com configuração segura para usuários não-root
 
-3. **Cluster Docker Swarm**  
+3. **Cluster Docker Swarm**
    - Transforme a VM em manager/worker com um comando
    - Geração automática de tokens de join
 
-4. **Proxy Reverso com HTTPS Zero-Config**  
-   Usando Caddy + Let's Encrypt:  
-   - Certificados SSL automáticos  
-   - Suporte a wildcards (*.seudominio.duckdns.org)  
-   - Atualização DNS integrada  
+4. **Proxy Reverso com HTTPS Zero-Config**
+   Usando Caddy + Let's Encrypt:
+   - Certificados SSL automáticos
+   - Suporte a wildcards (*.seudominio.duckdns.org)
+   - Atualização DNS integrada
 
-5. **Segurança Reforçada**  
-   - Firewall com regras mínimas necessárias  
-   - Auto-recuperação do SSH  
-   - Isolamento de rede entre serviços  
+5. **Segurança Reforçada**
+   - Firewall com regras mínimas necessárias
+   - Auto-recuperação do SSH
+   - Isolamento de rede entre serviços
 
-6. **Monitoramento**  
-   - Portainer para gestão visual  
+6. **Monitoramento**
+   - Portainer para gestão visual
    - Atualizações de IP via DuckDNS (6h-23h)
 
 ## Pré-requisitos
 
 - [x] Conta no [DuckDNS](https://www.duckdns.org) com:
   - [x] `Subdomínio` configurado
-  - [x] `Token` (Fica no Header uma vez que você tenha logado no site, abaixo de _account_ e _type_)  
+  - [x] `Token` (Fica no Header uma vez que você tenha logado no site, abaixo de _account_ e _type_)
 - [x] Acesso SSH à instância
 - [x] Ubuntu 22.04+ (x86 ou ARM)
 
@@ -43,7 +43,7 @@
 ### Baixe o Script primeiro
 
 ```bash
-curl -sS -o setup-server.sh https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main/setup-server.sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main/setup-server.sh)
 ```
 Isso vai gravar um arquivo `setup-server.sh` no seu diretório atual.
 
@@ -61,12 +61,12 @@ APPS_BASE_DIR="$HOME/custom-dir" bash ./setup_server.sh
 ```
 
 ### Pós-Instalação:
-1. Configure as variáveis:  
+1. Configure as variáveis:
 ```bash
 nano ~/.env
 ```
 
-2. Reinicie a sessão SSH  
+2. Reinicie a sessão SSH
 ```bash
 exec ssh $USER@$(hostname -I | awk '{print $1}')
 ```
@@ -89,12 +89,12 @@ DUCKDNS_SUBDOMAIN.duckdns.org
 
 ### Sem Portainer (Manual)
 
-1. Crie um novo diretório:  
+1. Crie um novo diretório:
 ```bash
 mkdir -p ~/apps/meu-app && cd ~/apps/meu-app
 ```
 
-2. Crie `docker-compose.yml`:  
+2. Crie `docker-compose.yml`:
 ```yaml
 version: '3.8'
 services:
@@ -107,7 +107,7 @@ services:
       caddy.target: "meu-app:8080"
 ```
 
-3. Inicie o serviço:  
+3. Inicie o serviço:
 ```bash
 docker compose up -d
 ```

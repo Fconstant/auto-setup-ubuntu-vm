@@ -4,6 +4,7 @@ set -e
 APPS_BASE_DIR="${APPS_BASE_DIR:-$HOME/apps}"
 CADDY_BASE_DIR="$APPS_BASE_DIR/base"
 REPO_URL="https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main"
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
 
 # --- Validações ---
 validate_email() {
@@ -19,10 +20,8 @@ validate_swarm_mode() {
     }
 }
 
-# --- Configuração do Ambiente ---
 setup_environment() {
-    local script_dir=$(dirname "$(realpath "$0")")
-    local env_file="$script_dir/.env"
+    local env_file="$SCRIPT_DIR/.env"
 
     # Criar .env se não existir
     if [ ! -f "$env_file" ]; then
@@ -47,11 +46,10 @@ EOF
     source $env_file
     CADDY_BASE_DIR="$APPS_BASE_DIR/base"
 
-    echo -e "\n🗂️ Diretório de instalação será $APPS_BASE_DIR. Caddy stack/compose em $CADDY_BASE_DIR.\n"
+    echo -e "\n🗂️  Diretório de instalação será $APPS_BASE_DIR. Caddy stack/compose em $CADDY_BASE_DIR.\n"
     validate_swarm_mode "$SWARM_MODE"
 }
 
-# --- Configuração do Sistema ---
 configure_swap() {
     if grep -q "^/swapfile" /proc/swaps; then
         echo -e "\n🔧 Swap já configurado (/swapfile ativo). Pulando configuração de swap."
@@ -103,7 +101,6 @@ setup_firewall() {
     sudo touch /tmp/ufw_configured
 }
 
-# --- Instalação do Docker ---
 install_docker_stack() {
     if command -v docker &>/dev/null; then
         echo -e "\n🐳 Docker já instalado. Pulando instalação."
@@ -132,7 +129,6 @@ install_docker_stack() {
     exit 0 # Encerra o script temporariamente para o usuário aplicar as permissões do grupo
 }
 
-# --- Configuração de Serviços ---
 setup_caddy() {
     mkdir -p "$CADDY_BASE_DIR"
     if [ -f "$CADDY_BASE_DIR/Caddyfile" ]; then
@@ -142,6 +138,7 @@ setup_caddy() {
         curl -sSL "$REPO_URL/Caddyfile" -o "$CADDY_BASE_DIR/Caddyfile"
         sed -i "s/\${DOMAIN}/$DOMAIN/g" "$CADDY_BASE_DIR/Caddyfile"
         sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/Caddyfile"
+        sed -i "s/\${EMAIL}/$EMAIL/g" "$CADDY_BASE_DIR/Caddyfile"
     fi
 }
 
@@ -168,7 +165,6 @@ deploy_services() {
     fi
 }
 
-# --- Configuração do Swarm ---
 init_swarm() {
     if docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -qx "active"; then
         echo -e "\n🐝 Swarm já está ativo. Pulando inicialização."
@@ -204,29 +200,32 @@ join_swarm() {
     fi
 }
 
-setup_cronjobs() {
-    echo -e "\n⏰ Configurando tarefas agendadas..."
+setup_failsafes() {
     dpkg -l | grep -q cron || sudo apt-get install -y cron
-
-    if [[ "$SWARM_MODE" != "worker" ]]; then
-        local duck_dns_url="https://www.duckdns.org/update?domains=${DUCKDNS_SUBDOMAIN}&token=${DUCKDNS_TOKEN}&ip="
-        if crontab -l 2>/dev/null | grep -q "$duck_dns_url"; then
-            echo "Cron DuckDNS já configurado. Pulando."
-        else
-            (
-                crontab -l 2>/dev/null
-                echo "*/15 6-23 * * * curl -s '$duck_dns_url'"
-            ) | crontab -
-        fi
-    fi
 
     if crontab -l 2>/dev/null | grep -q "nc -z localhost 22"; then
         echo "Cron SSH Failsafe já configurado. Pulando."
     else
+        echo -e "\n🔐 Configurando SSH Failsafe..."
         (
             crontab -l 2>/dev/null
             echo "*/10 * * * * if ! nc -z localhost 22; then sudo systemctl restart ssh; fi"
         ) | crontab -
+    fi
+}
+
+file_cleanup() {
+    read -p "Você deseja limpar os arquivos de instalação? (Y/n): " clean_choice
+    if [[ "$clean_choice" =~ ^[Yy]$ ]]; then
+        echo "🧹 Limpando arquivos de instalação..."
+
+        local files="${SCRIPT_DIR}/.env ${SCRIPT_DIR}/setup-manager.sh"
+        # Arquivos a serem removidos
+        rm -f $files
+
+        echo -e "🧹✅ Arquivos removidos com sucesso\n($files)."
+    else
+        echo "🧹🛑 Arquivos de instalação mantidos."
     fi
 }
 
@@ -239,7 +238,7 @@ main() {
 
     configure_swap
     setup_firewall
-    setup_cronjobs
+    setup_failsafes
 
     if [[ "$SWARM_MODE" == "worker" ]]; then
         join_swarm
@@ -252,7 +251,7 @@ main() {
         deploy_services
     fi
 
-    echo -e "\n✅ Configuração concluída ($SWARM_MODE)"
+    echo -e "\n✅ Configuração concluída ($SWARM_MODE)\n"
 
     [[ "$SWARM_MODE" == "manager" ]] && {
         echo "🔍 Verifique os serviços com: docker service ls"
@@ -278,6 +277,8 @@ main() {
         echo "  2. Crie um docker-compose.yml usando a rede 'caddy-net'"
         echo "  3. docker compose up -d"
     }
+
+    file_cleanup
 }
 
 main "$@"
