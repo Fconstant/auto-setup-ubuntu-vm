@@ -32,35 +32,43 @@
 
 ## Pré-requisitos
 
-- [ ] Conta no [DuckDNS](https://www.duckdns.org) com:  
-  `Subdomínio + Token`  
-- [ ] Acesso SSH à instância  
-- [ ] Ubuntu 22.04+ (x86 ou ARM)
+- [x] Conta no [DuckDNS](https://www.duckdns.org) com:
+  - [x] `Subdomínio` configurado
+  - [x] `Token` (Fica no Header uma vez que você tenha logado no site, abaixo de _account_ e _type_)  
+- [x] Acesso SSH à instância
+- [x] Ubuntu 22.04+ (x86 ou ARM)
 
 ## Guia Rápido
 
-### Para Modo Standalone (Default):
+### Baixe o Script primeiro
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main/setup-server.sh | bash
+curl -sS -o setup-server.sh https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main/setup-server.sh
+```
+Isso vai gravar um arquivo `setup-server.sh` no seu diretório atual.
+
+### Executar no Modo Standalone (Default):
+```bash
+bash ./setup_server.sh
 ```
 
-### Para Docker Swarm Cluster:
+### Executar no modo Docker Swarm:
 1. **Manager Node**:  
 ```bash
-curl -sSL [URL] | SWARM_MODE=manager bash
+SWARM_MODE=manager bash ./setup_server.sh
 ```
 
-2. **Worker Nodes**:  
+2. **Worker Nodes**:
 ```bash
-curl -sSL [URL] | SWARM_MODE=worker bash
+SWARM_MODE=worker SWARM_TOKEN=<token_gerado_pelo_manager> MANAGER_IP=<address_do_manager> bash ./setup_server.sh
 ```
 
-### Em outro dir
+### Configurar em outro dir
 Por padrão será instalado no diretório `~/apps`
 Porém você pode mudar isso com a variável de ambiente: `APPS_BASE_DIR`:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Fconstant/auto-setup-ubuntu-vm/main/setup-server.sh | APPS_BASE_DIR="$HOME/custom-dir" bash
+APPS_BASE_DIR="$HOME/custom-dir" bash ./setup_server.sh
 ```
 
 ### Pós-Instalação:
@@ -75,10 +83,10 @@ exec ssh $USER@$(hostname -I | awk '{print $1}')
 ```
 
 ## Estrutura de Arquivos
-| Diretório       | Descrição                          |
-|-----------------|-----------------------------------|
-| `~/apps`        | Todos os serviços Docker          |
-| `~/apps/base`   | Configurações do Caddy/Portainer  |
+| Diretório     | Descrição                        |
+| ------------- | -------------------------------- |
+| `~/apps`      | Todos os serviços Docker         |
+| `~/apps/base` | Configurações do Caddy/Portainer |
 
 ## Adicionando Novos Serviços
 
@@ -116,17 +124,17 @@ docker compose up -d
 ```
 
 ## Gerenciamento
-| Tarefa                | Comando                          |
-|-----------------------|----------------------------------|
-| Ver serviços Swarm    | `docker service ls`             |
-| Ver containers locais | `docker ps`                     |
-| Logs do Caddy         | `docker logs -f caddy`          |
-| Atualizar stack       | `docker stack deploy -c ...`    |
+| Tarefa                | Comando                      |
+| --------------------- | ---------------------------- |
+| Ver serviços Swarm    | `docker service ls`          |
+| Ver containers locais | `docker ps`                  |
+| Logs do Caddy         | `docker logs -f caddy`       |
+| Atualizar stack       | `docker stack deploy -c ...` |
 
 ## Troubleshooting
-Problema                        | Solução  
--------------------------------|---------  
-Certificado SSL não gerado     | Verifique `.env` e reinicie o Caddy  
-Domínio não resolve            | `docker logs caddy \| grep DNS`  
-Erro ao entrar no Swarm        | Valide token com `SWMTKN-...`  
-Portainer não acessível        | `docker service ps portainer`  
+| Problema                   | Solução                             |
+| -------------------------- | ----------------------------------- |
+| Certificado SSL não gerado | Verifique `.env` e reinicie o Caddy |
+| Domínio não resolve        | `docker logs caddy \| grep DNS`     |
+| Erro ao entrar no Swarm    | Valide token com `SWMTKN-...`       |
+| Portainer não acessível    | `docker service ps portainer`       |
