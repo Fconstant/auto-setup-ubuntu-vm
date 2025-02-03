@@ -55,11 +55,25 @@ EOF
 
 # --- Configuração do Sistema ---
 configure_swap() {
+    if grep -q "^/swapfile" /proc/swaps; then
+        echo "🔧 Swap já configurado (/swapfile ativo). Pulando configuração de swap."
+        return
+    fi
+
+    # Exemplo usando df em megabytes
     local total_disk=$(df --output=size -m / | tail -1 | tr -d ' ')
-    local swap_size=$((total_disk * 20 / 100))
-    swap_size=$((swap_size > 2048 ? 2048 : swap_size))
+    local swap_size=$(( total_disk * 20 / 100 ))
+    swap_size=$(( swap_size > 2048 ? 2048 : swap_size ))
 
     echo "🔧 Configurando swap de ${swap_size}MB..."
+
+    # Se /swapfile já existir (mas não estiver ativo), remova-o primeiro
+    if [ -f /swapfile ]; then
+        echo "/swapfile já existe mas não está em uso, removendo..."
+        sudo swapoff /swapfile 2>/dev/null || true
+        sudo rm -f /swapfile
+    fi
+
     sudo fallocate -l ${swap_size}M /swapfile
     sudo chmod 600 /swapfile
     sudo mkswap /swapfile
@@ -68,6 +82,11 @@ configure_swap() {
 }
 
 setup_firewall() {
+    if [ -f /tmp/ufw_configured ]; then
+        echo "🔥 Firewall já configurado. Pulando configuração."
+        return
+    fi
+
     echo "🔥 Configurando Firewall..."
     sudo apt-get install -y ufw
     sudo ufw allow ssh comment 'SSH access'
@@ -83,12 +102,17 @@ setup_firewall() {
     fi
 
     sudo ufw --force enable
+    sudo touch /tmp/ufw_configured
 }
 
 # --- Instalação do Docker ---
 install_docker_stack() {
+    if command -v docker &>/dev/null; then
+        echo "🐳 Docker já instalado. Pulando instalação."
+        return
+    fi
+
     echo "🐳 Instalando Docker..."
-    sudo apt-get update
     sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
 
     # Adicionar repositório oficial
@@ -105,31 +129,35 @@ install_docker_stack() {
 
 # --- Configuração de Serviços ---
 setup_caddy() {
-    echo "🚀 Configurando Caddy..."
     mkdir -p "$CADDY_BASE_DIR"
-
-    # Baixar configurações do GitHub
-    curl -sSL "$REPO_URL/Caddyfile" \
-        -o "$CADDY_BASE_DIR/Caddyfile"
-
-    # Processar template
-    sed -i "s/\${DOMAIN}/$DOMAIN/g" "$CADDY_BASE_DIR/Caddyfile"
-    sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/Caddyfile"
+    if [ -f "$CADDY_BASE_DIR/Caddyfile" ]; then
+        echo "🚀 Caddyfile já existe. Pulando download."
+    else
+        echo "🚀 Configurando Caddy..."
+        curl -sSL "$REPO_URL/Caddyfile" -o "$CADDY_BASE_DIR/Caddyfile"
+        sed -i "s/\${DOMAIN}/$DOMAIN/g" "$CADDY_BASE_DIR/Caddyfile"
+        sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/Caddyfile"
+    fi
 }
 
 deploy_services() {
     echo "🎯 Implantando serviços..."
     local compose_url="$REPO_URL/docker-compose.yml"
 
-    # Baixar compose file
-    curl -sSL "$compose_url" -o "$CADDY_BASE_DIR/docker-compose.yml"
-
-    # Processar variáveis
-    sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/docker-compose.yml"
+    if [ -f "$CADDY_BASE_DIR/docker-compose.yml" ]; then
+        echo "Arquivo docker-compose.yml já existe. Pulando download."
+    else
+        curl -sSL "$compose_url" -o "$CADDY_BASE_DIR/docker-compose.yml"
+        sed -i "s/\${DUCKDNS_TOKEN}/$DUCKDNS_TOKEN/g" "$CADDY_BASE_DIR/docker-compose.yml"
+    fi
 
     if [[ "$SWARM_MODE" == "manager" ]]; then
-        docker network inspect caddy-net &>/dev/null || docker network create -d overlay --attachable caddy-net
-        docker stack deploy -c "$CADDY_BASE_DIR/docker-compose.yml" caddy_stack
+        if docker stack ls | grep -q caddy_stack; then
+            echo "Stack caddy_stack já implantada. Pulando implantação."
+        else
+            docker network inspect caddy-net &>/dev/null || docker network create -d overlay --attachable caddy-net
+            docker stack deploy -c "$CADDY_BASE_DIR/docker-compose.yml" caddy_stack
+        fi
     else
         docker network inspect caddy-net &>/dev/null || docker network create -d bridge --attachable caddy-net
         docker compose -f "$CADDY_BASE_DIR/docker-compose.yml" up -d
@@ -138,7 +166,12 @@ deploy_services() {
 
 # --- Configuração do Swarm ---
 init_swarm() {
-    echo "🐝 Inicializando Docker Swarm..."
+    if docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -q "active"; then
+        echo "🐝 Swarm já está ativo. Pulando inicialização."
+        return
+    fi
+    
+    echo "🐝 Inicializando cluster Docker Swarm (MANAGER)..."
     local advertise_addr=$(hostname -I | awk '{print $1}')
 
     if ! docker swarm init --advertise-addr "$advertise_addr"; then
@@ -152,6 +185,12 @@ init_swarm() {
 }
 
 join_swarm() {
+    if docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -q "active"; then
+        echo "🐝 Este node já faz parte de um Swarm. Pulando join_swarm."
+        return
+    fi
+
+    echo "🐝 Entrando em um cluster Docker Swarm (WORKER)..."
     read -p "IP do Manager: " MANAGER_IP
     read -p "Token de Join: " SWARM_TOKEN
 
@@ -163,30 +202,36 @@ join_swarm() {
     fi
 }
 
-# --- Agendamento de Tarefas ---
 setup_cronjobs() {
     echo "⏰ Configurando tarefas agendadas..."
 
-    # DuckDNS (6h-23h, a cada 15m)
     if [[ "$SWARM_MODE" != "worker" ]]; then
-        local duck_dns_url = "https://www.duckdns.org/update?domains=${DUCKDNS_SUBDOMAIN}&token=${DUCKDNS_TOKEN}&ip="
+        local duck_dns_url="https://www.duckdns.org/update?domains=${DUCKDNS_SUBDOMAIN}&token=${DUCKDNS_TOKEN}&ip="
+        if crontab -l 2>/dev/null | grep -q "$duck_dns_url"; then
+            echo "Cron DuckDNS já configurado. Pulando."
+        else
+            (
+                crontab -l 2>/dev/null
+                echo "*/15 6-23 * * * curl -s '$duck_dns_url'"
+            ) | crontab -
+        fi
+    fi
+
+    if crontab -l 2>/dev/null | grep -q "nc -z localhost 22"; then
+        echo "Cron SSH Failsafe já configurado. Pulando."
+    else
         (
             crontab -l 2>/dev/null
-            echo "*/15 6-23 * * * curl -s '$duck_dns_url'"
+            echo "*/10 * * * * if ! nc -z localhost 22; then sudo systemctl restart ssh; fi"
         ) | crontab -
     fi
-    
-    # SSH Failsafe (a cada 10m)
-    (
-        crontab -l 2>/dev/null
-        echo "*/10 * * * * if ! nc -z localhost 22; then sudo systemctl restart ssh; fi"
-    ) | crontab -
 }
 
 # --- Fluxo Principal ---
 main() {
     # Executar configurações iniciais
     setup_environment
+    sudo apt-get update
     configure_swap
     setup_firewall
     install_docker_stack
